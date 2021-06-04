@@ -2,7 +2,7 @@ version: '3.7'
 
 services:
   api:
-    container_name: account-api
+    container_name: ms-account-api
     build:
       context: .
       target: development
@@ -10,23 +10,22 @@ services:
       - .:/usr/src/app
       - /usr/src/app/node_modules
     ports:
-      - 3003:3001
+      - 8080:8080
       - 9233:9229
-    command: npm run start:debug
     env_file:
       - .env
     environment:
       - MONGO_URL=mongodb
-      - PORT=3001
+      - PORT=8080
     networks:
       - account-net
     depends_on:
       - mongodb
   mongodb:
     container_name: mongodb
-    image: mongo:3.6.18-xenial
+    image: mongo:4.4.6
     ports:
-      - 27023:27017
+      - 27017:27017
     networks:
       - account-net
 networks:

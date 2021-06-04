@@ -2,7 +2,6 @@ import {
   Controller,
   Post,
   Body,
-  Query,
   Get,
   UseGuards,
   Request,
@@ -23,5 +22,10 @@ export class UserController {
     @CurrentUser() currentUser,
   ): Promise<User> {
     return currentUser;
+  }
+
+  @Post()
+  public async createUser(@Body() user: UserCreateWithAuthModel) {
+    return this.userService.createUserWithAuth(user);
   }
 }

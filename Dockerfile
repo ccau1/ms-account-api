@@ -2,11 +2,25 @@ FROM node:12.17-alpine as development
 
 WORKDIR /usr/src/app
 
+RUN apk add --no-cache bash coreutils grep sed
+
 COPY package.json .
 
 COPY yarn.lock .
 
 RUN yarn i
+
+CMD ["yarn", "start:debug"]
+
+FROM node:12.17-alpine as production-builder
+
+WORKDIR /usr/src/app
+
+COPY package.json .
+
+COPY yarn.lock .
+
+RUN yarn i --only=prod
 
 COPY . .
 
@@ -19,12 +33,7 @@ FROM node:12.17-alpine as production
 
 WORKDIR /usr/src/app
 
-COPY package*.json .
-
-RUN yarn i --production=true
-
-COPY . .
-
-COPY --from=development /usr/src/app/dist ./dist
+COPY --from=production-builder /usr/src/app/node_modules ./node_modules
+COPY --from=production-builder /usr/src/app/dist ./dist
 
 CMD ["node", "dist/main"]

@@ -1,15 +1,22 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  forwardRef,
+  Inject,
+  Injectable,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { AuthModel } from './interfaces/auth';
 import { UserService } from '../User/user.service';
-import { compare, hash, genSalt } from 'bcrypt';
+import { compare } from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { AuthUserTokenModel } from './models/auth.userToken.model';
+import { AuthCreateModel } from './models/auth.create.model';
 
 @Injectable()
 export class AuthService {
   constructor(
     @InjectModel('Auths') private readonly authRepository: AuthModel,
+    @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
   ) {}
 
@@ -31,13 +38,18 @@ export class AuthService {
 
   protected async _createUserToken(
     userId: string,
-    options?: { accessTokenExpiresIn?: number; refreshTokenExpiresIn?: number },
+    options?: {
+      accessTokenExpiresIn?: number;
+      refreshTokenExpiresIn?: number;
+      clearTokens?: string[];
+    },
   ): Promise<AuthUserTokenModel> {
     const opts = {
       // default access to 1 day (seconds)
       accessTokenExpiresIn: 86400,
       // default refresh to 30 days (seconds)
       refreshTokenExpiresIn: 2592000,
+      clearTokens: [],
       ...options,
     };
 
@@ -66,6 +78,16 @@ export class AuthService {
       process.env.JWT_SECRET,
     );
 
+    // clear original/expired tokens
+    this.cleanRefreshTokens(userId, opts.clearTokens);
+
+    // add refresh token to db
+    this.addRefreshToken(
+      userId,
+      refreshToken,
+      currentTime * 1000 + opts.refreshTokenExpiresIn * 1000,
+    );
+
     // return user token obj
     return {
       accessToken,
@@ -75,11 +97,46 @@ export class AuthService {
     };
   }
 
+  public async addRefreshToken(
+    userId: string,
+    token: string,
+    expiresAt: number | Date,
+  ) {
+    return this.authRepository.findOneAndUpdate(
+      { user: userId },
+      {
+        $push: {
+          refreshTokens: { code: token, expiresAt: new Date(expiresAt) },
+        },
+      },
+      {
+        new: true,
+        lean: true,
+      },
+    );
+  }
+
+  public async cleanRefreshTokens(
+    userId: string,
+    specificTokens: string[] = [],
+  ) {
+    const auth = await this.authRepository.findOne({ user: userId });
+    auth.refreshTokens = auth.refreshTokens.filter(
+      t =>
+        t.expiresAt.valueOf() > new Date().valueOf() &&
+        !specificTokens.includes(t.code),
+    );
+
+    return auth.save();
+  }
+
   public async getUserToken(
     input: string,
     password: string,
   ): Promise<AuthUserTokenModel> {
-    const user = await this.userService.findOne({ verifyField: input });
+    const user = await this.userService.findOne({
+      verifyField: input,
+    });
 
     if (!user) {
       throw new Error('user not found');
@@ -105,16 +162,78 @@ export class AuthService {
 
     const user = await this.userService.findOne({ _ids: [decoded.sub] });
 
+    if (!user) throw new BadRequestException({ code: 'user_not_found' });
+
     const auth = await this.authRepository.findOne({
       user: user._id.toHexString(),
       refreshTokens: {
         $elemMatch: {
           code: refreshToken,
-          expireAt: { $gt: new Date() },
         },
       },
     });
 
-    return this._createUserToken(user._id.toHexString());
+    if (!auth) throw new BadRequestException({ code: 'invalid refreshToken' });
+
+    if (
+      auth.refreshTokens
+        .find(t => t.code === refreshToken)
+        .expiresAt.valueOf() < new Date().valueOf()
+    )
+      throw new BadRequestException({ code: 'refresh_token_expired' });
+
+    return this._createUserToken(user._id.toHexString(), {
+      clearTokens: [refreshToken],
+    });
+  }
+
+  public async setUserLocked(userId: string, isLocked: boolean) {
+    return this.authRepository.findOneAndUpdate(
+      { user: userId },
+      { isLocked },
+      { new: true },
+    );
+  }
+
+  public async setVerified(userId: string, type: string, isVerified = true) {
+    return this.authRepository.findOneAndUpdate(
+      { user: userId },
+      { [`verified.${type}`]: !!isVerified },
+      { new: true },
+    );
+  }
+
+  public async setIsVerified(userId: string, isVerified: boolean) {
+    return this.authRepository.findOneAndUpdate(
+      { user: userId },
+      { isVerified },
+      { new: true },
+    );
+  }
+
+  public async generateToken(userId: string, expiresAt: Date) {
+    // create token
+    const code = await this._jwtSign(
+      `genToken_${userId}_${expiresAt.valueOf()}`,
+      process.env.JWT_SECRET,
+    );
+    // set genToken obj
+    const genToken = { code, expiresAt };
+    // get auth obj by user id
+    const auth = await this.authRepository.findOne({ user: userId });
+    // set genTokens array by removing old ones and adding this
+    // new one
+    auth.genTokens = [
+      ...auth.genTokens.filter(g => g.expiresAt > new Date()),
+      genToken,
+    ];
+    // save and return new auth
+    return auth.save();
+  }
+
+  public async create(auth: AuthCreateModel) {
+    const authCreated = await this.authRepository.create(auth);
+
+    return authCreated;
   }
 }
